@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useMemo } from "react";
-import { Connection } from "@solana/web3.js";
+import { Connection, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 
@@ -10,6 +10,7 @@ export default function Home() {
   const ephemeralConnection = useMemo(() => new Connection("http://localhost:7799"), []);
   const [isSolanaConnected, setIsSolanaConnected] = useState(false);
   const [isEphemeralConnected, setIsEphemeralConnected] = useState(false);
+  const [balance, setBalance] = useState<number | null>(null);
 
   useEffect(() => {
     connection.getLatestBlockhash().then(() => {
@@ -24,6 +25,34 @@ export default function Home() {
     });
   }, [connection, ephemeralConnection]);
 
+  // Watch account balance
+  useEffect(() => {
+    if (!publicKey) {
+      // setBalance(null);
+      return;
+    }
+
+    // Fetch initial balance
+    connection.getBalance(publicKey).then((lamports) => {
+      setBalance(lamports / LAMPORTS_PER_SOL);
+    }).catch((error) => {
+      console.error("Failed to fetch balance:", error);
+    });
+
+    // Subscribe to account changes
+    const subscriptionId = connection.onAccountChange(
+      publicKey,
+      (accountInfo) => {
+        setBalance(accountInfo.lamports / LAMPORTS_PER_SOL);
+      },
+      "confirmed"
+    );
+
+    return () => {
+      connection.removeAccountChangeListener(subscriptionId);
+    };
+  }, [connection, publicKey]);
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
       <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
@@ -36,6 +65,9 @@ export default function Home() {
             <div className="flex flex-col gap-2">
               <p className="text-sm text-zinc-600 dark:text-zinc-400">
                 Wallet: {publicKey.toBase58().slice(0, 4)}...{publicKey.toBase58().slice(-4)}
+              </p>
+              <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                Balance: {balance !== null ? `${balance.toFixed(4)} SOL` : "Loading..."}
               </p>
             </div>
           )}
