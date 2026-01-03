@@ -1,16 +1,73 @@
 "use client";
-import { useState, useEffect, useMemo } from "react";
-import { Connection, LAMPORTS_PER_SOL } from "@solana/web3.js";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import { Connection, LAMPORTS_PER_SOL, PublicKey, SystemProgram } from "@solana/web3.js";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
+import { Program, AnchorProvider } from "@coral-xyz/anchor";
+import { Crank } from "../anchor/crank";
+import crankIdl from "../anchor/crank.json";
+
+const PROGRAM_ID = new PublicKey("8RT6jMFXpLXcLLNNUUbC57sro7uLJuKHYZkVGRYtzt14");
 
 export default function Home() {
   const { connection } = useConnection();
-  const { publicKey, connected, connecting, disconnecting } = useWallet();
-  const ephemeralConnection = useMemo(() => new Connection("http://localhost:7799"), []);
+  const { publicKey, connected, connecting, disconnecting, signTransaction, signAllTransactions } = useWallet();
+  const ephemeralConnection = useMemo(
+    () =>
+      new Connection("http://localhost:7799", {
+        wsEndpoint: "ws://localhost:7800",
+      }),
+    []
+  );
   const [isSolanaConnected, setIsSolanaConnected] = useState(false);
   const [isEphemeralConnected, setIsEphemeralConnected] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
+  const [isInitializing, setIsInitializing] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  const [counterValue, setCounterValue] = useState<number | null>(null);
+  const [isCounterInitialized, setIsCounterInitialized] = useState(false);
+
+  // Fix hydration mismatch by only rendering wallet button after mount
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const program = useMemo(() => {
+    if (!publicKey || !signTransaction || !signAllTransactions) return null;
+    
+    const provider = new AnchorProvider(
+      connection,
+      { publicKey, signTransaction, signAllTransactions },
+      { commitment: "confirmed" }
+    );
+    
+    return new Program<Crank>(crankIdl as Crank, provider);
+  }, [connection, publicKey, signTransaction, signAllTransactions]);
+
+  const [counterPda] = useMemo(() => {
+    return PublicKey.findProgramAddressSync([Buffer.from("counter")], PROGRAM_ID);
+  }, []);
+
+  const initializeCounter = useCallback(async () => {
+    if (!program || !publicKey) return;
+
+    setIsInitializing(true);
+    try {
+      const tx = await program.methods
+        .initialize()
+        .accounts({
+          counter: counterPda,
+          user: publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+      console.log("Counter initialized:", tx);
+    } catch (error) {
+      console.error("Failed to initialize counter:", error);
+    } finally {
+      setIsInitializing(false);
+    }
+  }, [program, publicKey, counterPda]);
 
   useEffect(() => {
     connection.getLatestBlockhash().then(() => {
@@ -53,12 +110,51 @@ export default function Home() {
     };
   }, [connection, publicKey]);
 
+  // Watch counter account status
+  useEffect(() => {
+    if (!program) return;
+
+    // Fetch initial counter state
+    const fetchCounter = async () => {
+      try {
+        const counter = await program.account.counter.fetch(counterPda);
+        setCounterValue(Number(counter.count));
+        setIsCounterInitialized(true);
+      } catch {
+        setIsCounterInitialized(false);
+        setCounterValue(null);
+      }
+    };
+
+    fetchCounter();
+
+    // Subscribe to counter account changes
+    const subscriptionId = connection.onAccountChange(
+      counterPda,
+      async () => {
+        try {
+          const counter = await program.account.counter.fetch(counterPda);
+          setCounterValue(Number(counter.count));
+          setIsCounterInitialized(true);
+        } catch {
+          setIsCounterInitialized(false);
+          setCounterValue(null);
+        }
+      },
+      "confirmed"
+    );
+
+    return () => {
+      connection.removeAccountChangeListener(subscriptionId);
+    };
+  }, [connection, program, counterPda]);
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
       <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
         <div className="flex flex-col gap-4">
           <div className="flex items-center gap-4">
-            <WalletMultiButton />
+            {mounted && <WalletMultiButton />}
           </div>
           
           {connected && publicKey && (
@@ -69,6 +165,29 @@ export default function Home() {
               <p className="text-sm text-zinc-600 dark:text-zinc-400">
                 Balance: {balance !== null ? `${balance.toFixed(4)} SOL` : "Loading..."}
               </p>
+              
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-zinc-600 dark:text-zinc-400">Counter:</span>
+                {isCounterInitialized ? (
+                  <span className="text-sm font-medium text-green-600 dark:text-green-400">
+                    Initialized (count: {counterValue})
+                  </span>
+                ) : (
+                  <span className="text-sm font-medium text-yellow-600 dark:text-yellow-400">
+                    Not Initialized
+                  </span>
+                )}
+              </div>
+
+              {!isCounterInitialized && (
+                <button
+                  onClick={initializeCounter}
+                  disabled={isInitializing || !program}
+                  className="px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {isInitializing ? "Initializing..." : "Initialize Counter"}
+                </button>
+              )}
             </div>
           )}
           
