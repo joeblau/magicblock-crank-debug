@@ -6,12 +6,10 @@ import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { Program, AnchorProvider } from "@coral-xyz/anchor";
 import { Crank } from "../anchor/crank";
 import crankIdl from "../anchor/crank.json";
-
+import { DELEGATION_PROGRAM_ID, MAGIC_PROGRAM_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { BN } from "@coral-xyz/anchor";
 
 const PROGRAM_ID = new PublicKey("8RT6jMFXpLXcLLNNUUbC57sro7uLJuKHYZkVGRYtzt14");
-const DELEGATION_PROGRAM_ID = new PublicKey("DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh");
-const MAGIC_PROGRAM_ID = new PublicKey("Magic11111111111111111111111111111111111111");
 
 export default function Home() {
   const { connection } = useConnection();
@@ -36,6 +34,7 @@ export default function Home() {
   const [isScheduling, setIsScheduling] = useState(false);
   const [isIncrementing, setIsIncrementing] = useState(false);
   const [isAutoIncrementing, setIsAutoIncrementing] = useState(false);
+  const [isUndelegating, setIsUndelegating] = useState(false);
 
   // Fix hydration mismatch by only rendering wallet button after mount
   useEffect(() => {
@@ -151,6 +150,49 @@ export default function Home() {
       setIsDelegating(false);
     }
   }, [program, publicKey, counterPda]);
+
+  // Undelegate counter from ER back to Solana
+  const undelegateCounter = useCallback(async () => {
+    if (!ephemeralProgram || !publicKey || !signTransaction) return;
+
+    setIsUndelegating(true);
+    try {
+      let tx = await ephemeralProgram.methods
+        .undelegate()
+        .accounts({
+          payer: publicKey,
+        })
+        .transaction();
+
+      tx.feePayer = publicKey;
+      const { blockhash, lastValidBlockHeight } = await ephemeralConnection.getLatestBlockhash();
+      tx.recentBlockhash = blockhash;
+
+      tx = await signTransaction(tx);
+
+      const txHash = await ephemeralConnection.sendRawTransaction(tx.serialize(), {
+        skipPreflight: true,
+      });
+
+      console.log("Undelegate tx sent:", txHash);
+
+      const confirmation = await ephemeralConnection.confirmTransaction({
+        signature: txHash,
+        blockhash,
+        lastValidBlockHeight,
+      }, "confirmed");
+
+      if (confirmation.value.err) {
+        console.error("Undelegate tx failed:", confirmation.value.err);
+      } else {
+        console.log("Undelegate tx confirmed:", txHash);
+      }
+    } catch (error) {
+      console.error("Failed to undelegate:", error);
+    } finally {
+      setIsUndelegating(false);
+    }
+  }, [ephemeralProgram, publicKey, signTransaction, ephemeralConnection]);
 
   // Manual increment on ER (for testing)
   const incrementOnER = useCallback(async () => {
@@ -564,6 +606,16 @@ export default function Home() {
                     className="w-full px-4 py-3 text-sm font-medium text-white bg-teal-600 rounded-lg hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
                     {isScheduling ? "Scheduling..." : "Schedule Crank (100x @ 200ms)"}
+                  </button>
+                  
+                  <div className="border-t border-blue-300 dark:border-blue-800 my-2"></div>
+                  
+                  <button
+                    onClick={undelegateCounter}
+                    disabled={isUndelegating || !ephemeralProgram}
+                    className="w-full px-4 py-3 text-sm font-medium text-white bg-orange-600 rounded-lg hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {isUndelegating ? "Undelegating..." : "← Undelegate to Solana"}
                   </button>
                 </div>
               )}
