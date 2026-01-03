@@ -21,7 +21,11 @@ custom-panic = []
 
 
 [dependencies]
-anchor-lang = "0.32.1"
+anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
+bincode = "1.3.3"
+ephemeral-rollups-sdk =  { version = "0.7.2", features = ["anchor", "disable-realloc"] }
+magicblock-magic-program-api = { version = "0.3.1", default-features = false }
+sha2 = "0.10.9"
 
 
 [lints.rust]
