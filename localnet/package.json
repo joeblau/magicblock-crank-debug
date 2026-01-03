@@ -1,0 +1,7 @@
+{
+  "name": "localnet",
+  "private": true,
+  "scripts": {
+    "dev": "sh localnet.sh"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "magicblock",
+  "private": true,
+  "scripts": {
+    "dev": "sh er.sh"
+  }
+}
