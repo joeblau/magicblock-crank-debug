@@ -5,7 +5,7 @@ use ephemeral_rollups_sdk::ephem::commit_and_undelegate_accounts;
 
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
-    program::invoke_signed,
+    program::invoke,
 };
 use ephemeral_rollups_sdk::consts::MAGIC_PROGRAM_ID;
 use magicblock_magic_program_api::{
@@ -52,6 +52,15 @@ pub mod crank {
         ctx: Context<ScheduleIncrement>,
         args: ScheduleIncrementArgs,
     ) -> Result<()> {
+        msg!(
+            "Scheduling task: id={}, interval={}ms, iterations={}",
+            args.task_id,
+            args.execution_interval_millis,
+            args.iterations
+        );
+        msg!("Counter PDA: {}", ctx.accounts.counter.key());
+        msg!("Program to invoke: {}", ctx.accounts.program.key());
+
         let increment_ix = Instruction {
             program_id: crate::ID,
             accounts: vec![AccountMeta::new(ctx.accounts.counter.key(), false)],
@@ -72,7 +81,7 @@ pub mod crank {
         // ScheduleTask requires:
         // - 0: [WRITE, SIGNER] Payer
         // - 1: [WRITE] Task context account (MAGIC_CONTEXT_PUBKEY)
-        // - 2..n: [] Accounts included in the task
+        // - 2..n: [] Accounts included in the task (including the program to invoke)
         let schedule_ix = Instruction::new_with_bytes(
             MAGIC_PROGRAM_ID,
             &ix_data,
@@ -80,19 +89,23 @@ pub mod crank {
                 AccountMeta::new(ctx.accounts.payer.key(), true),
                 AccountMeta::new(MAGIC_CONTEXT_PUBKEY, false),
                 AccountMeta::new(ctx.accounts.counter.key(), false),
+                AccountMeta::new_readonly(ctx.accounts.program.key(), false),
             ],
         );
 
-        invoke_signed(
+        msg!("Invoking Magic Program ScheduleTask CPI...");
+        invoke(
             &schedule_ix,
             &[
+                ctx.accounts.magic_program.to_account_info(),
                 ctx.accounts.payer.to_account_info(),
                 ctx.accounts.magic_context.to_account_info(),
                 ctx.accounts.counter.to_account_info(),
+                ctx.accounts.program.to_account_info(),
             ],
-            &[],
         )?;
 
+        msg!("ScheduleTask CPI completed successfully");
         Ok(())
     }
 

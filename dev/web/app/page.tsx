@@ -1,236 +1,190 @@
 "use client";
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Connection, LAMPORTS_PER_SOL, PublicKey, SystemProgram } from "@solana/web3.js";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { Program, AnchorProvider } from "@coral-xyz/anchor";
 import { Crank } from "../anchor/crank";
 import crankIdl from "../anchor/crank.json";
-import { DELEGATION_PROGRAM_ID, MAGIC_PROGRAM_ID, MAGIC_CONTEXT_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
+import { MAGIC_PROGRAM_ID, MAGIC_CONTEXT_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { BN } from "@coral-xyz/anchor";
 
 const PROGRAM_ID = new PublicKey("8RT6jMFXpLXcLLNNUUbC57sro7uLJuKHYZkVGRYtzt14");
 
-// MagicBlock devnet validator identity (for devnet.magicblock.app)
-const MAGICBLOCK_DEVNET_VALIDATOR = new PublicKey("MAS1Dt9qreoRMQ14YQuhg8UTZMMzDdKhmkZMECCzk57");
+// Pre-compute the counter PDA at module level (it never changes)
+const [COUNTER_PDA] = PublicKey.findProgramAddressSync([Buffer.from("counter")], PROGRAM_ID);
 
 export default function Home() {
   const { connection } = useConnection();
   const { publicKey, connected, connecting, disconnecting, signTransaction, signAllTransactions } = useWallet();
+  
+  // Use ref for ephemeral connection to avoid recreating
   const ephemeralConnection = useMemo(
     () =>
-      new Connection("https://devnet.magicblock.app", {
-        wsEndpoint: "wss://devnet.magicblock.app",
+      new Connection("https://devnet-as.magicblock.app", {
+        wsEndpoint: "wss://devnet-as.magicblock.app",
+        commitment: "confirmed",
       }),
     []
   );
+
   const [isSolanaConnected, setIsSolanaConnected] = useState(false);
   const [isEphemeralConnected, setIsEphemeralConnected] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
-  const [isInitializing, setIsInitializing] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [solanaCounterValue, setSolanaCounterValue] = useState<number | null>(null);
   const [isSolanaCounterInitialized, setIsSolanaCounterInitialized] = useState(false);
   const [erCounterValue, setErCounterValue] = useState<number | null>(null);
   const [isErCounterInitialized, setIsErCounterInitialized] = useState(false);
+  
+  // Loading states
+  const [isInitializing, setIsInitializing] = useState(false);
   const [isDelegating, setIsDelegating] = useState(false);
   const [isScheduling, setIsScheduling] = useState(false);
   const [isIncrementing, setIsIncrementing] = useState(false);
   const [isAutoIncrementing, setIsAutoIncrementing] = useState(false);
   const [isUndelegating, setIsUndelegating] = useState(false);
 
-  // Fix hydration mismatch by only rendering wallet button after mount
+  // Cache blockhash to avoid fetching on every tx
+  const blockhashCache = useRef<{ blockhash: string; lastValidBlockHeight: number; timestamp: number } | null>(null);
+
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  // Read-only program for fetching data without wallet (Solana)
+  // Read-only program for Solana
   const readOnlyProgram = useMemo(() => {
     const provider = new AnchorProvider(
       connection,
-      // Dummy wallet for read-only operations
-      {
-        publicKey: PublicKey.default,
-        signTransaction: async (tx) => tx,
-        signAllTransactions: async (txs) => txs,
-      },
+      { publicKey: PublicKey.default, signTransaction: async (tx) => tx, signAllTransactions: async (txs) => txs },
       { commitment: "confirmed" }
     );
     return new Program<Crank>(crankIdl as Crank, provider);
   }, [connection]);
 
-  // Read-only program for fetching data without wallet (ER)
+  // Read-only program for ER
   const readOnlyErProgram = useMemo(() => {
     const provider = new AnchorProvider(
       ephemeralConnection,
-      // Dummy wallet for read-only operations
-      {
-        publicKey: PublicKey.default,
-        signTransaction: async (tx) => tx,
-        signAllTransactions: async (txs) => txs,
-      },
+      { publicKey: PublicKey.default, signTransaction: async (tx) => tx, signAllTransactions: async (txs) => txs },
       { commitment: "confirmed" }
     );
     return new Program<Crank>(crankIdl as Crank, provider);
   }, [ephemeralConnection]);
 
+  // User's program instance (only created when wallet connected)
   const program = useMemo(() => {
     if (!publicKey || !signTransaction || !signAllTransactions) return null;
-    
     const provider = new AnchorProvider(
       connection,
       { publicKey, signTransaction, signAllTransactions },
-      { commitment: "confirmed" }
+      { commitment: "confirmed", skipPreflight: true }
     );
-    
     return new Program<Crank>(crankIdl as Crank, provider);
   }, [connection, publicKey, signTransaction, signAllTransactions]);
 
-  // Program for ephemeral rollup operations
+  // Ephemeral program instance
   const ephemeralProgram = useMemo(() => {
     if (!publicKey || !signTransaction || !signAllTransactions) return null;
-    
     const provider = new AnchorProvider(
       ephemeralConnection,
       { publicKey, signTransaction, signAllTransactions },
-      { commitment: "confirmed" }
+      { commitment: "confirmed", skipPreflight: true }
     );
-    
     return new Program<Crank>(crankIdl as Crank, provider);
   }, [ephemeralConnection, publicKey, signTransaction, signAllTransactions]);
 
-  const [counterPda] = useMemo(() => {
-    return PublicKey.findProgramAddressSync([Buffer.from("counter")], PROGRAM_ID);
+  // Helper to get cached or fresh blockhash
+  const getBlockhash = useCallback(async (conn: Connection) => {
+    const now = Date.now();
+    // Cache blockhash for 30 seconds
+    if (blockhashCache.current && now - blockhashCache.current.timestamp < 30000) {
+      return blockhashCache.current;
+    }
+    const result = await conn.getLatestBlockhash("confirmed");
+    blockhashCache.current = { ...result, timestamp: now };
+    return result;
   }, []);
 
+  // ============ ACTIONS ============
 
   const initializeCounter = useCallback(async () => {
     if (!program || !publicKey) return;
-
     setIsInitializing(true);
     try {
+      // Use rpc() for simplicity - it handles everything
       const tx = await program.methods
         .initialize()
-        .accounts({
-          counter: counterPda,
-          user: publicKey,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
+        .accounts({ counter: COUNTER_PDA, user: publicKey, systemProgram: SystemProgram.programId })
+        .rpc({ skipPreflight: true });
       console.log("Counter initialized:", tx);
     } catch (error) {
       console.error("Failed to initialize counter:", error);
     } finally {
       setIsInitializing(false);
     }
-  }, [program, publicKey, counterPda]);
+  }, [program, publicKey]);
 
   const delegateCounter = useCallback(async () => {
     if (!program || !publicKey || !signTransaction) return;
-
     setIsDelegating(true);
     try {
-      console.log("Delegating counter PDA:", counterPda.toBase58());
-      
-      // Build transaction manually to avoid wallet adapter issues
-      // Pass the devnet validator as remainingAccounts to target specific ER
-      let tx = await program.methods
+      console.log("Delegating counter PDA:", COUNTER_PDA.toBase58());
+
+      // Build and send in one flow
+      const tx = await program.methods
         .delegate()
-        .accounts({
-          payer: publicKey,
-          pda: counterPda,
-        })
-        .remainingAccounts([
-          {
-            pubkey: MAGICBLOCK_DEVNET_VALIDATOR,
-            isSigner: false,
-            isWritable: false,
-          },
-        ])
+        .accounts({ payer: publicKey, pda: COUNTER_PDA })
+        .remainingAccounts([])
         .transaction();
-      
+
       tx.feePayer = publicKey;
-      tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+      const { blockhash } = await getBlockhash(connection);
+      tx.recentBlockhash = blockhash;
+
+      const signed = await signTransaction(tx);
+      const txHash = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: true });
       
-      tx = await signTransaction(tx);
-      
-      const txHash = await connection.sendRawTransaction(tx.serialize(), {
-        skipPreflight: true,
-      });
-      
-      console.log("Counter delegated to ER:", txHash);
-      console.log("View on explorer: https://explorer.solana.com/tx/" + txHash + "?cluster=devnet");
-      
-      // Wait for confirmation
+      console.log("Delegation tx sent:", txHash);
       await connection.confirmTransaction(txHash, "confirmed");
-      console.log("Delegation confirmed on Solana!");
-      
-      // Wait for the ER to pick up the delegated account
-      console.log("Waiting for ER to sync the delegated account...");
-      let erReady = false;
-      for (let i = 0; i < 30; i++) { // Try for up to 30 seconds
+      console.log("Delegation confirmed!");
+
+      // Wait for ER sync (with shorter timeout)
+      console.log("Waiting for ER sync...");
+      for (let i = 0; i < 15; i++) {
         await new Promise(resolve => setTimeout(resolve, 1000));
-        try {
-          const accountInfo = await ephemeralConnection.getAccountInfo(counterPda);
-          if (accountInfo) {
-            console.log("Account found on ER! Owner:", accountInfo.owner.toBase58());
-            erReady = true;
-            break;
-          }
-        } catch (e) {
-          // Account not ready yet
+        const accountInfo = await ephemeralConnection.getAccountInfo(COUNTER_PDA);
+        if (accountInfo) {
+          console.log("ER synced! Owner:", accountInfo.owner.toBase58());
+          break;
         }
-        console.log(`Waiting for ER sync... (${i + 1}/30)`);
-      }
-      
-      if (erReady) {
-        console.log("ER is ready! You can now increment.");
-      } else {
-        console.log("ER sync timed out. The account may still be syncing.");
       }
     } catch (error) {
-      console.error("Failed to delegate counter:", error);
+      console.error("Failed to delegate:", error);
     } finally {
       setIsDelegating(false);
     }
-  }, [program, publicKey, signTransaction, counterPda, connection, ephemeralConnection]);
+  }, [program, publicKey, signTransaction, connection, ephemeralConnection, getBlockhash]);
 
-  // Undelegate counter from ER back to Solana
   const undelegateCounter = useCallback(async () => {
     if (!ephemeralProgram || !publicKey || !signTransaction) return;
-
     setIsUndelegating(true);
     try {
-      let tx = await ephemeralProgram.methods
+      const tx = await ephemeralProgram.methods
         .undelegate()
-        .accounts({
-          payer: publicKey,
-        })
+        .accounts({ payer: publicKey })
         .transaction();
 
       tx.feePayer = publicKey;
       const { blockhash, lastValidBlockHeight } = await ephemeralConnection.getLatestBlockhash();
       tx.recentBlockhash = blockhash;
 
-      tx = await signTransaction(tx);
-
-      const txHash = await ephemeralConnection.sendRawTransaction(tx.serialize(), {
-        skipPreflight: true,
-      });
+      const signed = await signTransaction(tx);
+      const txHash = await ephemeralConnection.sendRawTransaction(signed.serialize(), { skipPreflight: true });
 
       console.log("Undelegate tx sent:", txHash);
-
-      const confirmation = await ephemeralConnection.confirmTransaction({
-        signature: txHash,
-        blockhash,
-        lastValidBlockHeight,
-      }, "confirmed");
-
-      if (confirmation.value.err) {
-        console.error("Undelegate tx failed:", confirmation.value.err);
-      } else {
-        console.log("Undelegate tx confirmed:", txHash);
-      }
+      await ephemeralConnection.confirmTransaction({ signature: txHash, blockhash, lastValidBlockHeight }, "confirmed");
+      console.log("Undelegate confirmed!");
     } catch (error) {
       console.error("Failed to undelegate:", error);
     } finally {
@@ -238,88 +192,51 @@ export default function Home() {
     }
   }, [ephemeralProgram, publicKey, signTransaction, ephemeralConnection]);
 
-  // Manual increment on ER (for testing)
   const incrementOnER = useCallback(async () => {
     if (!ephemeralProgram || !publicKey || !signTransaction) return;
-
     setIsIncrementing(true);
     try {
-      // First check the account info on ER
-      const accountInfo = await ephemeralConnection.getAccountInfo(counterPda);
-      if (accountInfo) {
-        console.log("Account on ER - Owner:", accountInfo.owner.toBase58());
-        console.log("Account on ER - Lamports:", accountInfo.lamports);
-        console.log("Account on ER - Data length:", accountInfo.data.length);
-        console.log("Account on ER - Executable:", accountInfo.executable);
-      } else {
-        console.log("Account NOT FOUND on ER!");
-      }
-
-      let tx = await ephemeralProgram.methods
+      const tx = await ephemeralProgram.methods
         .increment()
-        .accounts({
-          counter: counterPda,
-        })
+        .accounts({ counter: COUNTER_PDA })
         .transaction();
 
       tx.feePayer = publicKey;
       const { blockhash, lastValidBlockHeight } = await ephemeralConnection.getLatestBlockhash();
       tx.recentBlockhash = blockhash;
 
-      tx = await signTransaction(tx);
-
-      const txHash = await ephemeralConnection.sendRawTransaction(tx.serialize(), {
-        skipPreflight: true,
-      });
+      const signed = await signTransaction(tx);
+      const txHash = await ephemeralConnection.sendRawTransaction(signed.serialize(), { skipPreflight: true });
 
       console.log("Increment tx sent:", txHash);
-
-      const confirmation = await ephemeralConnection.confirmTransaction({
-        signature: txHash,
-        blockhash,
-        lastValidBlockHeight,
-      }, "confirmed");
-
-      if (confirmation.value.err) {
-        console.error("Increment tx failed:", confirmation.value.err);
-      } else {
-        console.log("Increment tx confirmed:", txHash);
-      }
+      await ephemeralConnection.confirmTransaction({ signature: txHash, blockhash, lastValidBlockHeight }, "confirmed");
+      console.log("Increment confirmed!");
     } catch (error) {
       console.error("Failed to increment:", error);
     } finally {
       setIsIncrementing(false);
     }
-  }, [ephemeralProgram, publicKey, signTransaction, ephemeralConnection, counterPda]);
+  }, [ephemeralProgram, publicKey, signTransaction, ephemeralConnection]);
 
-  // Auto increment on ER (simulates crank)
   const autoIncrementOnER = useCallback(async () => {
     if (!ephemeralProgram || !publicKey || !signTransaction) return;
-
     setIsAutoIncrementing(true);
     try {
+      // Pre-fetch blockhash once for all transactions
+      const { blockhash } = await ephemeralConnection.getLatestBlockhash();
+
       for (let i = 0; i < 5; i++) {
-        let tx = await ephemeralProgram.methods
+        const tx = await ephemeralProgram.methods
           .increment()
-          .accounts({
-            counter: counterPda,
-          })
+          .accounts({ counter: COUNTER_PDA })
           .transaction();
 
         tx.feePayer = publicKey;
-        const { blockhash } = await ephemeralConnection.getLatestBlockhash();
         tx.recentBlockhash = blockhash;
 
-        tx = await signTransaction(tx);
-
-        const txHash = await ephemeralConnection.sendRawTransaction(tx.serialize(), {
-          skipPreflight: true,
-        });
-
+        const signed = await signTransaction(tx);
+        const txHash = await ephemeralConnection.sendRawTransaction(signed.serialize(), { skipPreflight: true });
         console.log(`[${i + 1}/5] Increment tx sent:`, txHash);
-
-        // Small delay between transactions
-        await new Promise(resolve => setTimeout(resolve, 50));
       }
       console.log("Auto increment complete!");
     } catch (error) {
@@ -327,19 +244,20 @@ export default function Home() {
     } finally {
       setIsAutoIncrementing(false);
     }
-  }, [ephemeralProgram, publicKey, signTransaction, ephemeralConnection, counterPda]);
+  }, [ephemeralProgram, publicKey, signTransaction, ephemeralConnection]);
 
   const scheduleIncrement = useCallback(async () => {
     if (!ephemeralProgram || !publicKey || !signTransaction) return;
-
     setIsScheduling(true);
     try {
-      // Build the transaction
-      let tx = await ephemeralProgram.methods
+      const taskId = Date.now();
+      console.log("Scheduling crank with taskId:", taskId);
+
+      const tx = await ephemeralProgram.methods
         .scheduleIncrement({
-          taskId: new BN(Date.now()), // Use timestamp as unique task ID
-          executionIntervalMillis: new BN(200), // 200ms between executions
-          iterations: new BN(5), // 5 iterations
+          taskId: new BN(taskId),
+          executionIntervalMillis: new BN(200),
+          iterations: new BN(5),
         })
         .accounts({
           magicProgram: MAGIC_PROGRAM_ID,
@@ -349,86 +267,70 @@ export default function Home() {
         })
         .transaction();
 
-      // Set fee payer and recent blockhash from ephemeral connection
       tx.feePayer = publicKey;
       const { blockhash, lastValidBlockHeight } = await ephemeralConnection.getLatestBlockhash();
       tx.recentBlockhash = blockhash;
 
-      // Sign the transaction
-      tx = await signTransaction(tx);
+      const signed = await signTransaction(tx);
+      const txHash = await ephemeralConnection.sendRawTransaction(signed.serialize(), { skipPreflight: true });
 
-      // Send to ephemeral rollup
-      const txHash = await ephemeralConnection.sendRawTransaction(tx.serialize(), {
-        skipPreflight: true,
-      });
-
-      console.log("Schedule increment tx sent:", txHash);
-
-      // Wait for confirmation
-      const confirmation = await ephemeralConnection.confirmTransaction({
-        signature: txHash,
-        blockhash,
-        lastValidBlockHeight,
-      }, "confirmed");
+      console.log("Schedule tx sent:", txHash);
+      const confirmation = await ephemeralConnection.confirmTransaction(
+        { signature: txHash, blockhash, lastValidBlockHeight },
+        "confirmed"
+      );
 
       if (confirmation.value.err) {
-        console.error("Schedule increment tx failed:", confirmation.value.err);
+        console.error("Schedule tx failed:", confirmation.value.err);
       } else {
-        console.log("Schedule increment tx confirmed:", txHash);
+        console.log("Schedule tx confirmed! Watching for counter updates...");
+        
+        // Fetch logs
+        try {
+          const txDetails = await ephemeralConnection.getTransaction(txHash, {
+            commitment: "confirmed",
+            maxSupportedTransactionVersion: 0,
+          });
+          txDetails?.meta?.logMessages?.forEach(log => console.log("  ", log));
+        } catch {
+          // Ignore log fetch errors
+        }
       }
     } catch (error) {
-      console.error("Failed to schedule increment:", error);
+      console.error("Failed to schedule:", error);
     } finally {
       setIsScheduling(false);
     }
   }, [ephemeralProgram, publicKey, signTransaction, ephemeralConnection]);
 
+  // ============ EFFECTS ============
+
+  // Check connection status once on mount
   useEffect(() => {
-    connection.getLatestBlockhash().then(() => {
-      setIsSolanaConnected(true);
-    }).catch(() => {
-      setIsSolanaConnected(false);
-    });
-    ephemeralConnection.getLatestBlockhash().then(() => {
-      setIsEphemeralConnected(true);
-    }).catch(() => {
-      setIsEphemeralConnected(false);
-    });
+    Promise.all([
+      connection.getLatestBlockhash().then(() => setIsSolanaConnected(true)).catch(() => setIsSolanaConnected(false)),
+      ephemeralConnection.getLatestBlockhash().then(() => setIsEphemeralConnected(true)).catch(() => setIsEphemeralConnected(false)),
+    ]);
   }, [connection, ephemeralConnection]);
 
-  // Watch account balance
+  // Watch wallet balance via WebSocket
   useEffect(() => {
-    if (!publicKey) {
-      // setBalance(null);
-      return;
-    }
+    if (!publicKey) return;
 
-    // Fetch initial balance
-    connection.getBalance(publicKey).then((lamports) => {
-      setBalance(lamports / LAMPORTS_PER_SOL);
-    }).catch((error) => {
-      console.error("Failed to fetch balance:", error);
-    });
+    connection.getBalance(publicKey).then((lamports) => setBalance(lamports / LAMPORTS_PER_SOL));
 
-    // Subscribe to account changes
-    const subscriptionId = connection.onAccountChange(
-      publicKey,
-      (accountInfo) => {
-        setBalance(accountInfo.lamports / LAMPORTS_PER_SOL);
-      },
-      "confirmed"
-    );
+    const subId = connection.onAccountChange(publicKey, (info) => {
+      setBalance(info.lamports / LAMPORTS_PER_SOL);
+    }, "confirmed");
 
-    return () => {
-      connection.removeAccountChangeListener(subscriptionId);
-    };
+    return () => { connection.removeAccountChangeListener(subId); };
   }, [connection, publicKey]);
 
-  // Watch Solana counter account status with WebSocket subscription
+  // Watch Solana counter via WebSocket only
   useEffect(() => {
     const fetchCounter = async () => {
       try {
-        const counter = await readOnlyProgram.account.counter.fetch(counterPda);
+        const counter = await readOnlyProgram.account.counter.fetch(COUNTER_PDA);
         setSolanaCounterValue(Number(counter.count));
         setIsSolanaCounterInitialized(true);
       } catch {
@@ -439,53 +341,34 @@ export default function Home() {
 
     fetchCounter();
 
-    // Subscribe to account changes via WebSocket
-    const subscriptionId = connection.onAccountChange(
-      counterPda,
-      async (accountInfo) => {
-        try {
-          // Decode the account data directly from the callback
-          const counter = readOnlyProgram.coder.accounts.decode("counter", accountInfo.data);
-          setSolanaCounterValue(Number(counter.count));
-          setIsSolanaCounterInitialized(true);
-        } catch {
-          // Fallback to fetch if decode fails
-          try {
-            const counter = await readOnlyProgram.account.counter.fetch(counterPda);
-            setSolanaCounterValue(Number(counter.count));
-            setIsSolanaCounterInitialized(true);
-          } catch {
-            setIsSolanaCounterInitialized(false);
-            setSolanaCounterValue(null);
-          }
-        }
-      },
-      "confirmed"
-    );
+    const subId = connection.onAccountChange(COUNTER_PDA, (accountInfo) => {
+      try {
+        const counter = readOnlyProgram.coder.accounts.decode("counter", accountInfo.data);
+        setSolanaCounterValue(Number(counter.count));
+        setIsSolanaCounterInitialized(true);
+      } catch {
+        fetchCounter();
+      }
+    }, "confirmed");
 
-    return () => {
-      connection.removeAccountChangeListener(subscriptionId);
-    };
-  }, [connection, readOnlyProgram, counterPda]);
+    return () => { connection.removeAccountChangeListener(subId); };
+  }, [connection, readOnlyProgram]);
 
-  // Watch ER counter account status with WebSocket + polling fallback
+  // Watch ER counter via WebSocket + slower polling (1s instead of 100ms)
   useEffect(() => {
     if (!isEphemeralConnected) return;
 
-    let pollingInterval: ReturnType<typeof setInterval> | null = null;
     let isMounted = true;
 
     const fetchCounter = async () => {
       try {
-        const counter = await readOnlyErProgram.account.counter.fetch(counterPda);
+        const counter = await readOnlyErProgram.account.counter.fetch(COUNTER_PDA);
         if (isMounted) {
-          console.log("[ER] Counter value:", Number(counter.count));
           setErCounterValue(Number(counter.count));
           setIsErCounterInitialized(true);
         }
-      } catch (error) {
+      } catch {
         if (isMounted) {
-          console.log("[ER] Counter not found or error:", error);
           setIsErCounterInitialized(false);
           setErCounterValue(null);
         }
@@ -494,43 +377,35 @@ export default function Home() {
 
     fetchCounter();
 
-    // Subscribe to account changes via WebSocket
-    let subscriptionId: number | undefined;
+    // WebSocket subscription
+    let subId: number | undefined;
     try {
-      subscriptionId = ephemeralConnection.onAccountChange(
-        counterPda,
-        async (accountInfo) => {
-          try {
-            const counter = readOnlyErProgram.coder.accounts.decode("counter", accountInfo.data);
-            if (isMounted) {
-              console.log("[ER WebSocket] Counter value:", Number(counter.count));
-              setErCounterValue(Number(counter.count));
-              setIsErCounterInitialized(true);
-            }
-          } catch {
-            await fetchCounter();
+      subId = ephemeralConnection.onAccountChange(COUNTER_PDA, (accountInfo) => {
+        try {
+          const counter = readOnlyErProgram.coder.accounts.decode("counter", accountInfo.data);
+          if (isMounted) {
+            setErCounterValue(Number(counter.count));
+            setIsErCounterInitialized(true);
           }
-        },
-        "confirmed"
-      );
-      console.log("[ER] WebSocket subscription created:", subscriptionId);
+        } catch {
+          fetchCounter();
+        }
+      }, "confirmed");
     } catch (error) {
-      console.error("Failed to subscribe to ER account changes:", error);
+      console.error("Failed to subscribe to ER:", error);
     }
 
-    // Also poll every 100ms as a fallback for fast updates
-    pollingInterval = setInterval(fetchCounter, 100);
+    // Poll every 1 second as fallback (was 100ms - way too aggressive)
+    const pollInterval = setInterval(fetchCounter, 1000);
 
     return () => {
       isMounted = false;
-      if (subscriptionId !== undefined) {
-        ephemeralConnection.removeAccountChangeListener(subscriptionId);
-      }
-      if (pollingInterval) {
-        clearInterval(pollingInterval);
-      }
+      if (subId !== undefined) ephemeralConnection.removeAccountChangeListener(subId);
+      clearInterval(pollInterval);
     };
-  }, [ephemeralConnection, readOnlyErProgram, counterPda, isEphemeralConnected]);
+  }, [ephemeralConnection, readOnlyErProgram, isEphemeralConnected]);
+
+  // ============ RENDER ============
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
@@ -563,7 +438,6 @@ export default function Home() {
             <div className="p-4 rounded-lg border-2 border-purple-500 bg-purple-50 dark:bg-purple-950/20">
               <h2 className="text-lg font-bold text-purple-700 dark:text-purple-400 mb-4">Solana (Base Layer)</h2>
               
-              {/* Connection Status */}
               <div className="mb-4">
                 <p className="text-sm text-zinc-600 dark:text-zinc-400">
                   Status: {isSolanaConnected ? (
@@ -574,7 +448,6 @@ export default function Home() {
                 </p>
               </div>
 
-              {/* Counter Display */}
               <div className="p-4 rounded-lg bg-white dark:bg-zinc-900 mb-4">
                 <p className="text-xs text-zinc-500 uppercase tracking-wide mb-1">Counter Value</p>
                 {isSolanaCounterInitialized ? (
@@ -584,7 +457,6 @@ export default function Home() {
                 )}
               </div>
 
-              {/* Solana Actions */}
               {connected && publicKey && (
                 <div className="flex flex-col gap-2">
                   {!isSolanaCounterInitialized && (
@@ -616,7 +488,6 @@ export default function Home() {
             <div className="p-4 rounded-lg border-2 border-blue-500 bg-blue-50 dark:bg-blue-950/20">
               <h2 className="text-lg font-bold text-blue-700 dark:text-blue-400 mb-4">Ephemeral Rollup</h2>
               
-              {/* Connection Status */}
               <div className="mb-4">
                 <p className="text-sm text-zinc-600 dark:text-zinc-400">
                   Status: {isEphemeralConnected ? (
@@ -627,7 +498,6 @@ export default function Home() {
                 </p>
               </div>
 
-              {/* Counter Display */}
               <div className="p-4 rounded-lg bg-white dark:bg-zinc-900 mb-4">
                 <p className="text-xs text-zinc-500 uppercase tracking-wide mb-1">Counter Value</p>
                 {isErCounterInitialized ? (
@@ -637,7 +507,6 @@ export default function Home() {
                 )}
               </div>
 
-              {/* ER Actions */}
               {connected && publicKey && isSolanaCounterInitialized && (
                 <div className="flex flex-col gap-2">
                   <button
