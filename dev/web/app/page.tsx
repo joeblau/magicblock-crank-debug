@@ -298,7 +298,7 @@ export default function Home() {
 
     setIsAutoIncrementing(true);
     try {
-      for (let i = 0; i < 100; i++) {
+      for (let i = 0; i < 5; i++) {
         let tx = await ephemeralProgram.methods
           .increment()
           .accounts({
@@ -316,7 +316,7 @@ export default function Home() {
           skipPreflight: true,
         });
 
-        console.log(`[${i + 1}/100] Increment tx sent:`, txHash);
+        console.log(`[${i + 1}/5] Increment tx sent:`, txHash);
 
         // Small delay between transactions
         await new Promise(resolve => setTimeout(resolve, 50));
@@ -339,7 +339,7 @@ export default function Home() {
         .scheduleIncrement({
           taskId: new BN(Date.now()), // Use timestamp as unique task ID
           executionIntervalMillis: new BN(200), // 200ms between executions
-          iterations: new BN(100), // 100 iterations
+          iterations: new BN(5), // 5 iterations
         })
         .accounts({
           magicProgram: MAGIC_PROGRAM_ID,
@@ -653,7 +653,7 @@ export default function Home() {
                     disabled={isAutoIncrementing || !ephemeralProgram}
                     className="w-full px-4 py-3 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
-                    {isAutoIncrementing ? "Auto Incrementing..." : "Auto Increment (100x)"}
+                    {isAutoIncrementing ? "Auto Incrementing..." : "Auto Increment (5x)"}
                   </button>
                   
                   <button
@@ -661,7 +661,7 @@ export default function Home() {
                     disabled={isScheduling || !ephemeralProgram}
                     className="w-full px-4 py-3 text-sm font-medium text-white bg-teal-600 rounded-lg hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
-                    {isScheduling ? "Scheduling..." : "Schedule Crank (100x @ 200ms)"}
+                    {isScheduling ? "Scheduling..." : "Schedule Crank (5x @ 200ms)"}
                   </button>
                   
                   <div className="border-t border-blue-300 dark:border-blue-800 my-2"></div>
