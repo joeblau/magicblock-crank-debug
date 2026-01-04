@@ -12,12 +12,13 @@ interface SolanaProviderProps {
   children: ReactNode;
 }
 
-// Connect to localnet where the crank program is deployed
-const LOCALNET_ENDPOINT = "http://localhost:8899";
+// Connect to devnet
+const DEVNET_ENDPOINT = `https://devnet.helius-rpc.com/?api-key=${process.env.NEXT_PUBLIC_HELIUS_API_KEY}`;
+const DEVNET_WS_ENDPOINT = `wss://atlas-devnet.helius-rpc.com/?api-key=${process.env.NEXT_PUBLIC_HELIUS_API_KEY}`;
 
 export const SolanaProvider: FC<SolanaProviderProps> = ({ children }) => {
   return (
-    <ConnectionProvider endpoint={LOCALNET_ENDPOINT}>
+    <ConnectionProvider endpoint={DEVNET_ENDPOINT} config={{ wsEndpoint: DEVNET_WS_ENDPOINT }}>
       <WalletProvider wallets={[]} autoConnect>
         <WalletModalProvider>{children}</WalletModalProvider>
       </WalletProvider>

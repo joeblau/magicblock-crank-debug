@@ -328,6 +328,11 @@ export type Crank = {
           "name": "magicProgram"
         },
         {
+          "name": "magicContext",
+          "writable": true,
+          "address": "MagicContext1111111111111111111111111111111"
+        },
+        {
           "name": "payer",
           "writable": true,
           "signer": true

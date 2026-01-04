@@ -6,18 +6,21 @@ import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { Program, AnchorProvider } from "@coral-xyz/anchor";
 import { Crank } from "../anchor/crank";
 import crankIdl from "../anchor/crank.json";
-import { DELEGATION_PROGRAM_ID, MAGIC_PROGRAM_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
+import { DELEGATION_PROGRAM_ID, MAGIC_PROGRAM_ID, MAGIC_CONTEXT_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { BN } from "@coral-xyz/anchor";
 
 const PROGRAM_ID = new PublicKey("8RT6jMFXpLXcLLNNUUbC57sro7uLJuKHYZkVGRYtzt14");
+
+// MagicBlock devnet validator identity (for devnet.magicblock.app)
+const MAGICBLOCK_DEVNET_VALIDATOR = new PublicKey("MAS1Dt9qreoRMQ14YQuhg8UTZMMzDdKhmkZMECCzk57");
 
 export default function Home() {
   const { connection } = useConnection();
   const { publicKey, connected, connecting, disconnecting, signTransaction, signAllTransactions } = useWallet();
   const ephemeralConnection = useMemo(
     () =>
-      new Connection("http://localhost:7799", {
-        wsEndpoint: "ws://localhost:7800",
+      new Connection("https://devnet.magicblock.app", {
+        wsEndpoint: "wss://devnet.magicblock.app",
       }),
     []
   );
@@ -100,8 +103,6 @@ export default function Home() {
     return PublicKey.findProgramAddressSync([Buffer.from("counter")], PROGRAM_ID);
   }, []);
 
-  // Local validator identity for delegation on localhost
-  const LOCAL_VALIDATOR_IDENTITY = new PublicKey("mAGicPQYBMvcYveUZA5F5UNNwyHvfYh5xkLS2Fr1mev");
 
   const initializeCounter = useCallback(async () => {
     if (!program || !publicKey) return;
@@ -125,11 +126,15 @@ export default function Home() {
   }, [program, publicKey, counterPda]);
 
   const delegateCounter = useCallback(async () => {
-    if (!program || !publicKey) return;
+    if (!program || !publicKey || !signTransaction) return;
 
     setIsDelegating(true);
     try {
-      const tx = await program.methods
+      console.log("Delegating counter PDA:", counterPda.toBase58());
+      
+      // Build transaction manually to avoid wallet adapter issues
+      // Pass the devnet validator as remainingAccounts to target specific ER
+      let tx = await program.methods
         .delegate()
         .accounts({
           payer: publicKey,
@@ -137,19 +142,58 @@ export default function Home() {
         })
         .remainingAccounts([
           {
-            pubkey: LOCAL_VALIDATOR_IDENTITY,
+            pubkey: MAGICBLOCK_DEVNET_VALIDATOR,
             isSigner: false,
             isWritable: false,
           },
         ])
-        .rpc();
-      console.log("Counter delegated to ER:", tx);
+        .transaction();
+      
+      tx.feePayer = publicKey;
+      tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+      
+      tx = await signTransaction(tx);
+      
+      const txHash = await connection.sendRawTransaction(tx.serialize(), {
+        skipPreflight: true,
+      });
+      
+      console.log("Counter delegated to ER:", txHash);
+      console.log("View on explorer: https://explorer.solana.com/tx/" + txHash + "?cluster=devnet");
+      
+      // Wait for confirmation
+      await connection.confirmTransaction(txHash, "confirmed");
+      console.log("Delegation confirmed on Solana!");
+      
+      // Wait for the ER to pick up the delegated account
+      console.log("Waiting for ER to sync the delegated account...");
+      let erReady = false;
+      for (let i = 0; i < 30; i++) { // Try for up to 30 seconds
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        try {
+          const accountInfo = await ephemeralConnection.getAccountInfo(counterPda);
+          if (accountInfo) {
+            console.log("Account found on ER! Owner:", accountInfo.owner.toBase58());
+            erReady = true;
+            break;
+          }
+        } catch (e) {
+          // Account not ready yet
+        }
+        console.log(`Waiting for ER sync... (${i + 1}/30)`);
+      }
+      
+      if (erReady) {
+        console.log("ER is ready! You can now increment.");
+      } else {
+        console.log("ER sync timed out. The account may still be syncing.");
+      }
     } catch (error) {
       console.error("Failed to delegate counter:", error);
     } finally {
       setIsDelegating(false);
     }
-  }, [program, publicKey, counterPda]);
+  }, [program, publicKey, signTransaction, counterPda, connection, ephemeralConnection]);
 
   // Undelegate counter from ER back to Solana
   const undelegateCounter = useCallback(async () => {
@@ -200,6 +244,17 @@ export default function Home() {
 
     setIsIncrementing(true);
     try {
+      // First check the account info on ER
+      const accountInfo = await ephemeralConnection.getAccountInfo(counterPda);
+      if (accountInfo) {
+        console.log("Account on ER - Owner:", accountInfo.owner.toBase58());
+        console.log("Account on ER - Lamports:", accountInfo.lamports);
+        console.log("Account on ER - Data length:", accountInfo.data.length);
+        console.log("Account on ER - Executable:", accountInfo.executable);
+      } else {
+        console.log("Account NOT FOUND on ER!");
+      }
+
       let tx = await ephemeralProgram.methods
         .increment()
         .accounts({
@@ -288,6 +343,7 @@ export default function Home() {
         })
         .accounts({
           magicProgram: MAGIC_PROGRAM_ID,
+          magicContext: MAGIC_CONTEXT_ID,
           payer: publicKey,
           program: PROGRAM_ID,
         })

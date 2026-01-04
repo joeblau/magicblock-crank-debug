@@ -42,7 +42,7 @@ solana-test-validator \
   --clone-upgradeable-program V4v1mQiAdLz4qwckEb45WqHYceYizoib39cDBHSWfaB `# Drift Faucet` \
   --clone-upgradeable-program Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz `# MagicBlock VRF Program` \
   --clone-upgradeable-program BTWAqWNBmF2TboMh3fxMJfgR16xGHYD7Kgr2dPwbRPBi `# MagicBlock Permission Program` \
-  --url https://api.devnet.solana.com \
+  --url https://jillie-ji0a1l-fast-devnet.helius-rpc.com \
   --rpc-port 8899 \
   --reset
 

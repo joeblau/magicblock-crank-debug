@@ -8,7 +8,9 @@ use anchor_lang::solana_program::{
     program::invoke_signed,
 };
 use ephemeral_rollups_sdk::consts::MAGIC_PROGRAM_ID;
-use magicblock_magic_program_api::{args::ScheduleTaskArgs, instruction::MagicBlockInstruction};
+use magicblock_magic_program_api::{
+    args::ScheduleTaskArgs, instruction::MagicBlockInstruction, MAGIC_CONTEXT_PUBKEY,
+};
 
 declare_id!("8RT6jMFXpLXcLLNNUUbC57sro7uLJuKHYZkVGRYtzt14");
 
@@ -67,11 +69,16 @@ pub mod crank {
             ProgramError::InvalidArgument
         })?;
 
+        // ScheduleTask requires:
+        // - 0: [WRITE, SIGNER] Payer
+        // - 1: [WRITE] Task context account (MAGIC_CONTEXT_PUBKEY)
+        // - 2..n: [] Accounts included in the task
         let schedule_ix = Instruction::new_with_bytes(
             MAGIC_PROGRAM_ID,
             &ix_data,
             vec![
                 AccountMeta::new(ctx.accounts.payer.key(), true),
+                AccountMeta::new(MAGIC_CONTEXT_PUBKEY, false),
                 AccountMeta::new(ctx.accounts.counter.key(), false),
             ],
         );
@@ -80,6 +87,7 @@ pub mod crank {
             &schedule_ix,
             &[
                 ctx.accounts.payer.to_account_info(),
+                ctx.accounts.magic_context.to_account_info(),
                 ctx.accounts.counter.to_account_info(),
             ],
             &[],
@@ -161,6 +169,9 @@ pub struct ScheduleIncrement<'info> {
     /// CHECK: used for CPI
     #[account()]
     pub magic_program: AccountInfo<'info>,
+    /// CHECK: Task context account for storing scheduled tasks
+    #[account(mut, address = MAGIC_CONTEXT_PUBKEY)]
+    pub magic_context: AccountInfo<'info>,
     #[account(mut)]
     pub payer: Signer<'info>,
     /// CHECK: Passed to CPI - using AccountInfo to avoid Anchor re-serializing stale data after CPI

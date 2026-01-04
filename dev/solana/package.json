@@ -7,7 +7,7 @@
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
     "dev": "sleep 5 &&bun run redeploy",
-    "redeploy": "anchor build && anchor deploy -- --with-compute-unit-price 0 && cp target/idl/* ../web/anchor/ && cp target/types/* ../web/anchor/"
+    "redeploy": "source .env && anchor build && anchor deploy --provider.cluster $HELIUS_RPC_URL -- --with-compute-unit-price 50000 && cp target/idl/* ../web/anchor/ && cp target/types/* ../web/anchor/"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
